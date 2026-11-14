@@ -1,403 +1,462 @@
 --[[
-    RIVALS CHEAT SCRIPT
-    Features: ESP, Aimbot, Killaura, Speed, Fly, Godmode (semi), NoClip, AutoReload
-    Loadstring:
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/DEINNAME/Rivals/main/script.lua"))()
+    RIVALS CHEAT SCRIPT  v2.0
+    Repo: https://github.com/opensmp6-creator/Rivalen-Script
+    Load: loadstring(game:HttpGet("https://raw.githubusercontent.com/opensmp6-creator/Rivalen-Script/main/Script.lua", true))()
+
+    Hotkeys:
+      RMB  = Aimbot (halten)
+      X    = Killaura toggle
+      F    = Fly toggle
+      N    = NoClip toggle
+      K    = GUI toggle
 --]]
 
--- ============ SERVICES ============
-local Players           = game:GetService("Players")
-local RunService        = game:GetService("RunService")
-local UserInputService  = game:GetService("UserInputService")
-local Lighting          = game:GetService("Lighting")
-local Camera            = workspace.CurrentCamera
-local LocalPlayer       = Players.LocalPlayer
+--============================================================
+-- SERVICES
+--============================================================
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UIS              = game:GetService("UserInputService")
+local RS               = game:GetService("ReplicatedStorage")
+local Camera           = workspace.CurrentCamera
+local LP               = Players.LocalPlayer
 
--- ============ CONFIG ============
+local HAS_DRAWING = pcall(function() return Drawing.new("Line") end)
+
+--============================================================
+-- CONFIG
+--============================================================
 local Config = {
     ESP = {
-        Enabled = true,
-        BoxColor = Color3.fromRGB(0, 255, 0),
-        NameColor = Color3.fromRGB(255, 255, 255),
-        HealthColor = Color3.fromRGB(0, 255, 0),
-        TracerColor = Color3.fromRGB(255, 0, 0),
-        ShowTracer = true,
-        ShowHealth = true,
-        ShowName = true,
-        MaxDistance = 1500,
+        Enabled      = true,
+        Boxes        = true,
+        Tracers      = true,
+        Names        = true,
+        Health       = true,
+        Distance     = true,
+        MaxDist      = 1500,
+        BoxColor     = Color3.fromRGB(0, 255, 100),
+        TracerColor  = Color3.fromRGB(255, 60, 60),
+        NameColor    = Color3.fromRGB(255, 255, 255),
+        DistColor    = Color3.fromRGB(180, 180, 180),
     },
     Aimbot = {
-        Enabled = true,
-        Key = Enum.UserInputType.MouseButton2,   -- RMB
-        Smoothness = 0.25,
-        FOV = 120,
-        MaxDistance = 800,
-        WallCheck = true,
-        TeamCheck = true,
+        Enabled      = true,
+        Key          = Enum.UserInputType.MouseButton2,
+        Smoothness   = 0.35,      -- höher = smoother, niedriger = snappier
+        FOV          = 140,
+        MaxDist      = 900,
+        WallCheck    = true,
+        TeamCheck    = true,
+        ShowFOV      = true,
+        TargetPart   = "Head",    -- "Head" | "HumanoidRootPart" | "UpperTorso"
     },
     Killaura = {
-        Enabled = true,
-        Range = 25,          -- Studs
-        Key = Enum.KeyCode.X, -- Toggle-Hotkey
+        Enabled      = true,
+        Range        = 28,
+        Key          = Enum.KeyCode.X,
+        RemotePath   = nil,       -- z.B. RS.Remotes.Hit ; nil = Fallback (Tool:Activate + VirtualUser)
     },
     Speed = {
-        Enabled = true,
-        Value = 30,           -- Standard ist ~16
-    },
-    Fly = {
-        Enabled = false,
-        Speed = 50,
-        Key = Enum.KeyCode.F,
+        Enabled      = true,
+        Value        = 30,
     },
     JumpPower = 70,
+    Fly = {
+        Enabled      = false,
+        Speed        = 55,
+        Key          = Enum.KeyCode.F,
+    },
     NoClip = false,
     AutoReload = true,
 }
 
--- ============ STATE ============
-local ESPObjects = {}
-local FlyBV, FlyBG = nil, nil
-local OriginalWalkSpeed, OriginalJumpPower
+--============================================================
+-- HELPERS
+--============================================================
+local function getChar(plr)
+    return plr and plr.Character
+end
 
--- ============ HELPERS ============
-local function isAlive(plr)
-    local char = plr and plr.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    return hum and hum.Health > 0
+local function getHum(plr)
+    local c = getChar(plr)
+    return c and c:FindFirstChildOfClass("Humanoid")
 end
 
 local function getRoot(plr)
-    local char = plr and plr.Character
-    return char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head"))
+    local c = getChar(plr)
+    return c and c:FindFirstChild("HumanoidRootPart")
 end
 
--- ============ ESP ============
+local function alive(plr)
+    local h = getHum(plr)
+    return h and h.Health > 0
+end
+
+local function sameTeam(a, b)
+    return a and b and a.Team and b.Team and a.Team == b.Team
+end
+
+local function rayClear(from, to, ignore)
+    local p = RaycastParams.new()
+    p.FilterType = Enum.RaycastFilterType.Exclude
+    p.FilterDescendantsInstances = ignore
+    local hit = workspace:Raycast(from, to - from, p)
+    return hit == nil
+end
+
+--============================================================
+-- ESP (Drawing API)
+--============================================================
+local ESP = {}          -- [player] = {box, tracer, name, health_bg, health_fill, dist}
+local Screen = Camera.ViewportSize
+
+Camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+    Screen = Camera.ViewportSize
+end)
+
+local function newDraw(type_)
+    if not HAS_DRAWING then return nil end
+    local ok, obj = pcall(Drawing.new, type_)
+    return ok and obj or nil
+end
+
 local function createESP(plr)
-    if plr == LocalPlayer then return end
-    if ESPObjects[plr] then return end
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name = "RivalsESP"
-    billboard.Size = UDim2.new(0, 200, 0, 50)
-    billboard.StudsOffset = Vector3.new(0, 3, 0)
-    billboard.AlwaysOnTop = true
-    billboard.Adornee = nil -- set später
-
-    local nameLabel = Instance.new("TextLabel")
-    nameLabel.Name = "NameLabel"
-    nameLabel.BackgroundTransparency = 1
-    nameLabel.Size = UDim2.new(1, 0, 0.5, 0)
-    nameLabel.Font = Enum.Font.GothamBold
-    nameLabel.TextSize = 14
-    nameLabel.TextColor3 = Config.ESP.NameColor
-    nameLabel.TextStrokeTransparency = 0
-    nameLabel.Text = plr.Name
-    nameLabel.Parent = billboard
-
-    local healthBar = Instance.new("Frame")
-    healthBar.Name = "HealthBg"
-    healthBar.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
-    healthBar.BorderSizePixel = 0
-    healthBar.Size = UDim2.new(1, 0, 0.15, 0)
-    healthBar.Position = UDim2.new(0, 0, 0.55, 0)
-    healthBar.Parent = billboard
-
-    local healthFill = Instance.new("Frame")
-    healthFill.Name = "HealthFill"
-    healthFill.BackgroundColor3 = Config.ESP.HealthColor
-    healthFill.BorderSizePixel = 0
-    healthFill.Size = UDim2.new(1, 0, 1, 0)
-    healthFill.Parent = healthBar
-
-    -- Line Drawing (Tracer)
-    local tracer = Instance.new("LineHandleAdornment") -- fallback falls Drawing nicht vorhanden
-    tracer.Name = "Tracer"
-
-    ESPObjects[plr] = {
-        Billboard = billboard,
-        NameLabel = nameLabel,
-        HealthFill = healthFill,
+    if plr == LP or ESP[plr] then return end
+    if not HAS_DRAWING then return end
+    ESP[plr] = {
+        box        = newDraw("Square"),
+        tracer     = newDraw("Line"),
+        name       = newDraw("Text"),
+        dist       = newDraw("Text"),
+        health_bg  = newDraw("Square"),
+        health_fill= newDraw("Square"),
     }
-
-    billboard.Parent = plr.Character
-        and plr.Character:FindFirstChild("HumanoidRootPart")
-        or workspace
+    local e = ESP[plr]
+    if e.box then
+        e.box.Thickness = 1
+        e.box.Filled = false
+        e.box.Color = Config.ESP.BoxColor
+    end
+    if e.tracer then
+        e.tracer.Thickness = 1
+        e.tracer.Color = Config.ESP.TracerColor
+    end
+    if e.name then
+        e.name.Center = true
+        e.name.Outline = true
+        e.name.Size = 14
+        e.name.Font = 2 -- Plex
+        e.name.Color = Config.ESP.NameColor
+    end
+    if e.dist then
+        e.dist.Center = true
+        e.dist.Outline = true
+        e.dist.Size = 12
+        e.dist.Font = 2
+        e.dist.Color = Config.ESP.DistColor
+    end
+    if e.health_bg then
+        e.health_bg.Thickness = 0
+        e.health_bg.Filled = true
+        e.health_bg.Color = Color3.fromRGB(40, 40, 40)
+    end
+    if e.health_fill then
+        e.health_fill.Thickness = 0
+        e.health_fill.Filled = true
+        e.health_fill.Color = Color3.fromRGB(0, 255, 0)
+    end
 end
 
-local function removeESP(plr)
-    local data = ESPObjects[plr]
-    if data and data.Billboard then data.Billboard:Destroy() end
-    ESPObjects[plr] = nil
+local function destroyESP(plr)
+    local e = ESP[plr]
+    if not e then return end
+    for _, obj in pairs(e) do
+        pcall(function() obj:Remove() end)
+    end
+    ESP[plr] = nil
 end
 
--- ============ AIMBOT ============
-local HeadAimFactor = Vector3.new(0, 0.5, 0)
+local function setVisible(e, state)
+    for _, obj in pairs(e) do
+        if obj and obj.Visible ~= nil then obj.Visible = state end
+    end
+end
 
-local function getClosestTarget()
-    local closest, closestDist = nil, math.huge
-    local mousePos = UserInputService:GetMouseLocation()
+local function headPos(plr)
+    local c = getChar(plr)
+    local h = c and c:FindFirstChild("Head")
+    return h and h.Position or (getRoot(plr) and getRoot(plr).Position)
+end
 
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr == LocalPlayer then continue end
-        if Config.Aimbot.TeamCheck and plr.Team == LocalPlayer.Team and plr.Team then continue end
-        if not isAlive(plr) then continue end
+local function updateESP(plr)
+    local e = ESP[plr]
+    if not e then return end
+    local char = getChar(plr)
+    local hum = getHum(plr)
+    local root = getRoot(plr)
+    if not (Config.ESP.Enabled and char and hum and root and hum.Health > 0) then
+        setVisible(e, false)
+        return
+    end
 
-        local head = plr.Character:FindFirstChild("Head")
-        local root = getRoot(plr)
-        if not head or not root then continue end
+    local camPos = Camera.CFrame.Position
+    local dist = (camPos - root.Position).Magnitude
+    if dist > Config.ESP.MaxDist then
+        setVisible(e, false)
+        return
+    end
 
-        local dist = (Camera.CFrame.Position - root.Position).Magnitude
-        if dist > Config.Aimbot.MaxDistance then continue end
-
-        local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
-        if onScreen then
-            local aimDist = (Vector2.new(mousePos.X, mousePos.Y) - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
-            if aimDist < Config.Aimbot.FOV and aimDist < closestDist then
-                if Config.Aimbot.WallCheck then
-                    local params = RaycastParams.new()
-                    params.FilterType = Enum.RaycastFilterType.Exclude
-                    params.FilterDescendantsInstances = {LocalPlayer.Character, plr.Character}
-                    local result = workspace:Raycast(Camera.CFrame.Position, (head.Position - Camera.CFrame.Position), params)
-                    if result then continue end
-                end
-                closest = plr
-                closestDist = aimDist
+    -- Berechne Bounding-Box auf dem Bildschirm
+    local minX, minY = math.huge, math.huge
+    local maxX, maxY = -math.huge, -math.huge
+    local any = false
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+            local pos, onScreen = Camera:WorldToViewportPoint(part.Position)
+            if onScreen then
+                local size = (Camera.CFrame.Position - part.Position).Magnitude
+                local pad = math.clamp(1500 / size, 2, 40)
+                minX = math.min(minX, pos.X - pad)
+                minY = math.min(minY, pos.Y - pad)
+                maxX = math.max(maxX, pos.X + pad)
+                maxY = math.max(maxY, pos.Y + pad)
+                any = true
             end
         end
     end
-    return closest
+    if not any then
+        setVisible(e, false)
+        return
+    end
+
+    local w, h = maxX - minX, maxY - minY
+    local headPix = Camera:WorldToViewportPoint(headPos(plr))
+
+    if e.box then
+        e.box.Visible   = Config.ESP.Boxes
+        e.box.Size      = Vector2.new(w, h)
+        e.box.Position  = Vector2.new(minX, minY)
+        e.box.Color     = Config.ESP.BoxColor
+    end
+
+    if e.tracer then
+        e.tracer.Visible = Config.ESP.Tracers
+        e.tracer.From    = Vector2.new(Screen.X / 2, Screen.Y)
+        e.tracer.To      = Vector2.new(headPix.X, headPix.Y)
+    end
+
+    if e.name then
+        e.name.Visible   = Config.ESP.Names
+        e.name.Position  = Vector2.new(minX + w / 2, minY - 16)
+        e.name.Text      = plr.Name
+    end
+
+    if e.dist then
+        e.dist.Visible   = Config.ESP.Distance
+        e.dist.Position  = Vector2.new(minX + w / 2, maxY + 2)
+        e.dist.Text      = ("%d m"):format(math.floor(dist / 3))
+    end
+
+    if e.health_bg and e.health_fill then
+        local show = Config.ESP.Health
+        e.health_bg.Visible   = show
+        e.health_fill.Visible = show
+        if show then
+            local barH = h
+            local barX = minX - 6
+            e.health_bg.Size     = Vector2.new(3, barH)
+            e.health_bg.Position = Vector2.new(barX, minY)
+            local pct = math.clamp(hum.Health / hum.MaxHealth, 0, 1)
+            e.health_fill.Size     = Vector2.new(3, barH * pct)
+            e.health_fill.Position = Vector2.new(barX, maxY - barH * pct)
+            local critical = pct <= 0.3
+            e.health_fill.Color = critical
+                and Color3.fromRGB(255, 60, 60)
+                or Color3.fromRGB(0, 255, 100)
+        end
+    end
 end
 
-local aimActive = false
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
-    if input.UserInputType == Config.Aimbot.Key and Config.Aimbot.Enabled then
-        aimActive = true
+--============================================================
+-- AIMBOT
+--============================================================
+local Aim = { active = false }
+
+local fovCircle
+if HAS_DRAWING and Config.Aimbot.ShowFOV then
+    fovCircle = Drawing.new("Circle")
+    fovCircle.Thickness = 1
+    fovCircle.NumSides   = 60
+    fovCircle.Radius     = Config.Aimbot.FOV
+    fovCircle.Filled     = false
+    fovCircle.Color      = Color3.fromRGB(255, 255, 255)
+    fovCircle.Transparency = 0.6
+end
+
+local function getTargetPart(plr)
+    local c = getChar(plr)
+    if not c then return nil end
+    return c:FindFirstChild(Config.Aimbot.TargetPart)
+        or c:FindFirstChild("Head")
+        or c:FindFirstChild("HumanoidRootPart")
+end
+
+local function closestTarget()
+    local mouse = UIS:GetMouseLocation()
+    local best, bestDist = nil, math.huge
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr == LP then continue end
+        if Config.Aimbot.TeamCheck and sameTeam(plr, LP) then continue end
+        if not alive(plr) then continue end
+
+        local root = getRoot(plr)
+        if not root then continue end
+        if (Camera.CFrame.Position - root.Position).Magnitude > Config.Aimbot.MaxDist then continue end
+
+        local part = getTargetPart(plr)
+        if not part then continue end
+
+        local screen, onScreen = Camera:WorldToViewportPoint(part.Position)
+        if not onScreen then continue end
+
+        local px = Vector2.new(screen.X, screen.Y)
+        local d  = (px - mouse).Magnitude
+        if d > Config.Aimbot.FOV or d >= bestDist then continue end
+
+        if Config.Aimbot.WallCheck then
+            local ok = rayClear(Camera.CFrame.Position, part.Position, {LP.Character, plr.Character})
+            if not ok then continue end
+        end
+
+        best, bestDist = plr, d
     end
-end)
-UserInputService.InputEnded:Connect(function(input, gpe)
-    if input.UserInputType == Config.Aimbot.Key then
-        aimActive = false
-    end
+    return best
+end
+
+UIS.InputBegan:Connect(function(i, gp)
+    if gp then return end
+    if i.UserInputType == Config.Aimbot.Key then Aim.active = true end
 end)
 
--- Aimbot Loop
+UIS.InputEnded:Connect(function(i, gp)
+    if i.UserInputType == Config.Aimbot.Key then Aim.active = false end
+end)
+
 RunService.RenderStepped:Connect(function()
-    if not aimActive or not Config.Aimbot.Enabled then return end
-    local target = getClosestTarget()
-    if not target then return end
-    local head = target.Character and target.Character:FindFirstChild("Head")
-    if not head then return end
-
-    local targetPos = head.Position + HeadAimFactor
-    local currentCF = Camera.CFrame
-    local desired = CFrame.new(currentCF.Position, targetPos)
-    Camera.CFrame = currentCF:Lerp(desired, Config.Aimbot.Smoothness)
-end)
-
--- ============ KILLAURA ============
-local killauraActive = true
-
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
-    if input.KeyCode == Config.Killaura.Key then
-        Config.Killaura.Enabled = not Config.Killaura.Enabled
+    if fovCircle then
+        fovCircle.Position = UIS:GetMouseLocation()
+        fovCircle.Visible  = Config.Aimbot.Enabled and Config.Aimbot.ShowFOV
+        fovCircle.Radius   = Config.Aimbot.FOV
     end
+    if not Aim.active or not Config.Aimbot.Enabled then return end
+    local target = closestTarget()
+    if not target then return end
+    local part = getTargetPart(target)
+    if not part then return end
+    local des = CFrame.new(Camera.CFrame.Position, part.Position)
+    Camera.CFrame = Camera.CFrame:Lerp(des, Config.Aimbot.Smoothness)
 end)
+
+--============================================================
+-- KILLAURA
+--============================================================
+local function fireHit(target)
+    local remote = Config.Killaura.RemotePath
+    if remote and typeof(remote) == "Instance" then
+        pcall(function() remote:FireServer(target.Character) end)
+        return
+    end
+    -- Fallback: Tool:Activate + VirtualUser
+    local char = LP.Character
+    if char then
+        for _, t in ipairs(char:GetChildren()) do
+            if t:IsA("Tool") then pcall(function() t:Activate() end) end
+        end
+    end
+    if VirtualUser then
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton1(UIS:GetMouseLocation())
+        end)
+    end
+end
 
 task.spawn(function()
-    while task.wait(0.05) do
+    while task.wait(0.06) do
         if not Config.Killaura.Enabled then continue end
-        local root = getRoot(LocalPlayer)
+        local root = getRoot(LP)
         if not root then continue end
         for _, plr in ipairs(Players:GetPlayers()) do
-            if plr == LocalPlayer then continue end
-            if not isAlive(plr) then continue end
-            local tRoot = getRoot(plr)
-            if not tRoot then continue end
-            if (root.Position - tRoot.Position).Magnitude <= Config.Killaura.Range then
-                -- Fire alle Tools / Remotes via Click simulieren
-                if mousemoverel then
-                    mousemoverel(0, 0)
-                end
-                -- standard hit-fire
-                pcall(function()
-                    for _, t in ipairs(LocalPlayer.Character:GetChildren()) do
-                        if t:IsA("Tool") then
-                            t:Activate()
-                        end
-                    end
-                end)
-                -- Roblox VirtualUser Fallback
-                if VirtualUser then
-                    pcall(function()
-                        VirtualUser:CaptureController()
-                        VirtualUser:ClickButton1(Vector2.new())
-                    end)
-                end
+            if plr == LP or not alive(plr) then continue end
+            local tr = getRoot(plr)
+            if tr and (root.Position - tr.Position).Magnitude <= Config.Killaura.Range then
+                fireHit(plr)
                 break
             end
         end
     end
 end)
 
--- ============ SPEED / JUMP ============
-local function applySpeed()
-    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+--============================================================
+-- SPEED / JUMP
+--============================================================
+local function applyMovement()
+    local hum = getHum(LP)
     if not hum then return end
-    OriginalWalkSpeed = OriginalWalkSpeed or hum.WalkSpeed
-    hum.WalkSpeed = Config.Speed.Enabled and Config.Speed.Value or OriginalWalkSpeed
-    hum.JumpPower = Config.JumpPower
+    hum.WalkSpeed = Config.Speed.Enabled and Config.Speed.Value or 16
     hum.UseJumpPower = true
+    hum.JumpPower = Config.JumpPower
 end
 
-LocalPlayer.CharacterAdded:Connect(function(char)
-    task.wait(0.5)
-    applySpeed()
+LP.CharacterAdded:Connect(function()
+    task.wait(0.4)
+    applyMovement()
+    if Config.Fly.Enabled then -- re-apply fly
+        Fly.enable()
+    end
 end)
-if LocalPlayer.Character then
-    applySpeed()
-end
+if LP.Character then applyMovement() end
 
--- ============ FLY ============
-local function enableFly()
-    local char = LocalPlayer.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    FlyBV = Instance.new("BodyVelocity")
-    FlyBV.Velocity = Vector3.zero
-    FlyBV.MaxForce = Vector3.new(1e5, 1e5, 1e5)
-    FlyBV.Parent = root
+--============================================================
+-- FLY
+--============================================================
+Fly = {
+    bv = nil,
+    bg = nil,
+    enable = function()
+        local root = getRoot(LP)
+        if not root or Fly.bv then return end
+        Fly.bv = Instance.new("BodyVelocity")
+        Fly.bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+        Fly.bv.Velocity = Vector3.zero
+        Fly.bv.Parent = root
 
-    FlyBG = Instance.new("BodyGyro")
-    FlyBG.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
-    FlyBG.P = 1e4
-    FlyBG.Parent = root
+        Fly.bg = Instance.new("BodyGyro")
+        Fly.bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+        Fly.bg.P = 1e4
+        Fly.bg.Parent = root
 
-    Config.Fly.Enabled = true
-end
+        Config.Fly.Enabled = true
+    end,
+    disable = function()
+        if Fly.bv then Fly.bv:Destroy() end
+        if Fly.bg then Fly.bg:Destroy() end
+        Fly.bv, Fly.bg = nil, nil
+        Config.Fly.Enabled = false
+    end,
+}
 
-local function disableFly()
-    if FlyBV then FlyBV:Destroy() end
-    if FlyBG then FlyBG:Destroy() end
-    FlyBV, FlyBG = nil, nil
-    Config.Fly.Enabled = false
-end
-
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
-    if input.KeyCode == Config.Fly.Key then
-        if Config.Fly.Enabled then disableFly() else enableFly() end
+UIS.InputBegan:Connect(function(i, gp)
+    if gp then return end
+    if i.KeyCode == Config.Fly.Key then
+        if Config.Fly.Enabled then Fly.disable() else Fly.enable() end
     end
 end)
 
 RunService.RenderStepped:Connect(function()
-    if not Config.Fly.Enabled or not FlyBV then return end
-    local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    local vel = Vector3.zero
-    local camCF = Camera.CFrame
-    if UserInputService:IsKeyDown(Enum.KeyCode.W) then vel += camCF.LookVector end
-    if UserInputService:IsKeyDown(Enum.KeyCode.S) then vel -= camCF.LookVector end
-    if UserInputService:IsKeyDown(Enum.KeyCode.A) then vel -= camCF.RightVector end
-    if UserInputService:IsKeyDown(Enum.KeyCode.D) then vel += camCF.RightVector end
-    if UserInputService:IsKeyDown(Enum.KeyCode.Space) then vel += Vector3.new(0, 1, 0) end
-    if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then vel -= Vector3.new(0, 1, 0) end
-    FlyBV.Velocity = vel.Magnitude > 0 and vel.Unit * Config.Fly.Speed or Vector3.zero
-    root.CFrame = CFrame.new(root.Position, root.Position + camCF.LookVector)
-end)
-
--- ============ NOCLIP ============
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
-    if input.KeyCode == Enum.KeyCode.N then
-        Config.NoClip = not Config.NoClip
-        local char = LocalPlayer.Character
-        if char then
-            for _, part in ipairs(char:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    part.CanCollide = not Config.NoClip
-                end
-            end
-        end
-    end
-end)
-
-RunService.Stepped:Connect(function()
-    if not Config.NoClip then return end
-    local char = LocalPlayer.Character
-    if char then
-        for _, part in ipairs(char:GetDescendants()) do
-            if part:IsA("BasePart") and part.CanCollide then
-                part.CanCollide = false
-            end
-        end
-    end
-end)
-
--- ============ AUTORELOAD ============
-task.spawn(function()
-    while task.wait(0.2) do
-        if not Config.AutoReload then continue end
-        local char = LocalPlayer.Character
-        if not char then continue end
-        for _, tool in ipairs(char:GetChildren()) do
-            if tool:IsA("Tool") then
-                local ammo = tool:FindFirstChild("Ammo") or tool:FindFirstChild("CurrentAmmo")
-                if ammo and ammo.Value == 0 then
-                    pcall(function() tool:Activate() end)
-                end
-            end
-        end
-    end
-end)
-
--- ============ ESP LOOP ============
-local function updateESP()
-    for plr, data in pairs(ESPObjects) do
-        local char = plr.Character
-        local root = getRoot(plr)
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        if config_esp_disabled or not char or not root or not hum then
-            data.Billboard.Enabled = false
-            continue
-        end
-        local dist = (Camera.CFrame.Position - root.Position).Magnitude
-        data.Billboard.Enabled = Config.ESP.Enabled and dist <= Config.ESP.MaxDistance
-        data.Billboard.Adornee = char:FindFirstChild("Head") or root
-        if hum then
-            data.HealthFill.Size = UDim2.new(hum.Health / hum.MaxHealth, 0, 1, 0)
-        end
-    end
-end
-
--- ============ PLAYER CONNECTIONS ============
-local function onCharacter(plr, char)
-    if plr == LocalPlayer then
-        task.wait(0.3)
-        applySpeed()
-    end
-end
-
-Players.PlayerAdded:Connect(function(plr)
-    plr.CharacterAdded:Connect(function(char) onCharacter(plr, char) end)
-    if plr.Character then createESP(plr) end
-end)
-Players.PlayerRemoving:Connect(removeESP)
-
-for _, plr in ipairs(Players:GetPlayers()) do
-    if plr ~= LocalPlayer then
-        createESP(plr)
-        plr.CharacterAdded:Connect(function() task.wait(0.3) createESP(plr) end)
-    end
-end
-
--- ============ MAIN LOOP ============
-RunService.RenderStepped:Connect(updateESP)
-
--- ============ CLEANUP ============
-LocalPlayer.CharacterAdded:Connect(function()
-    task.wait(0.5)
-    applySpeed()
-end)
-
-print("[Rivals Cheat] geladen – ESP aktiv, Aimbot = RMB, Killaura = X toggeln, Fly = F, NoClip = N")
+    if not Config.Fly.Enabled or not Fly.bv then return end
+    local cam = Camera.CFrame
+    local dir = Vector3.zero
+    if UIS:IsKeyDown(Enum.KeyCode.W)
